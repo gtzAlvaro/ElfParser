@@ -134,6 +134,7 @@ class elf:
         print(f'Symbol table \'.symtab\' contains {len(symbols)} entries:')
         headers = ['Num', 'Value', 'Size', 'Type', 'Bind', 'Vis', 'Ndx', 'Name']
         print(tabulate(matrix, headers=headers, tablefmt="plain"))
+        print()
 
     def get_abbreviation_tables(self, section_headers):
         abbreviation_tables = {}
@@ -171,45 +172,189 @@ class elf:
         return abbreviation_tables
 
     def dump_abbreviation_tables(self, abbreviation_tables):
+        print(f'Contents of the .debug_abbrev section:\n')
+        at_pad = len(max(list(h.DW_AT.values()), key=len))
+        tag_pad = len(max(list(h.DW_TAG.values()), key=len))
         for num in abbreviation_tables:
             print(f'  Number Tag ({hex(num)})')
             abbreviation_table = abbreviation_tables[num]
             for code in abbreviation_table:
                 tag, has_children, attrs = abbreviation_table[code]
-                print(f'   {code}      {h.DW_TAG[tag]}    {h.DW_CHILDREN[has_children]}')
-                matrix = []
+                print(f"   {str(code).ljust(7, ' ')}{h.DW_TAG[tag].ljust(tag_pad, ' ')}{h.DW_CHILDREN[has_children]}")
                 for name, form in attrs:
-                    matrix.append([h.DW_AT[name], h.DW_FORM[form]])
-                print(tabulate(matrix, tablefmt="plain"))
+                    print(f"    {h.DW_AT[name].ljust(at_pad, ' ')}{h.DW_FORM[form]}")
+        print()
 
-    def get_compilation_units(self, section_headers):
-        name, debug_info = self.get_section_from_name('.debug_info', section_headers)
-        cu_size = sizeof(h.CompilationUnitHeader)
+    def get_address_range_table(self, section_headers):
+        address_range_table = {}
+        name, debug_aranges = self.get_section_from_name('.debug_aranges', section_headers)
+        offset = debug_aranges.offset
+        limit = debug_aranges.offset + debug_aranges.size
 
         num = 0
+        while offset < limit:
+            arh = h.AddressRangeHeader.from_buffer_copy(self.data[offset : offset + sizeof(h.AddressRangeHeader)])
+            address_range_table[num] = [arh, []]
+            offset += sizeof(h.AddressRangeHeader)
+            while True:
+                address = int.from_bytes(self.data[offset : offset + 4], 'little')
+                length = int.from_bytes(self.data[offset + 4: offset + 8], 'little')
+                value = (address, length)
+                address_range_table[num][1].append(value)
+                offset += 8
+                if address == 0 and length == 0:
+                    break
+            num += 1
+        
+        return address_range_table
+    
+    def dump_address_range_table(self, address_range_table):
+        print('Contents of the .debug_aranges section:\n')
+        for num in address_range_table:
+            arh, values = address_range_table[num]
+            print(f'  Legnth:                   {arh.length}')
+            print(f'  Version:                  {arh.version}')
+            print(f'  Offset into .debug_info:  {hex(arh.info_offset)}')
+            print(f'  Pointer size:             {arh.ptr_size}')
+            print(f'  Segment size:             {arh.seg_size}\n')
+            print(f'    Address    Length')
+            for address, length in values:
+                print(f'    {address:08x} {length:08x}')
+        print()
+
+    def get_name_lookup_table(self, section_headers):
+        name_lookup_table = {}
+        name, debug_pubnames = self.get_section_from_name('.debug_pubnames', section_headers)
+        offset = debug_pubnames.offset
+        limit = debug_pubnames.offset + debug_pubnames.size
+
+        num = 0
+        while offset < limit:
+            nlh = h.NameLookupHeader.from_buffer_copy(self.data[offset : offset + sizeof(h.NameLookupHeader)])
+            name_lookup_table[num] = [nlh, []]
+            offset += sizeof(h.NameLookupHeader)
+            while True:
+                off = int.from_bytes(self.data[offset : offset + 4], 'little')
+                offset += 4
+                if off == 0:
+                    break
+                name = self.get_string(offset, 0)
+                value = (off, name)
+                name_lookup_table[num][1].append(value)
+                offset += len(name) + 1
+            num += 1
+
+        return name_lookup_table
+    
+    def dump_name_lookup_table(self, name_lookup_table):
+        print('Contents of the .debug_pubnames section:\n')
+        for num in name_lookup_table:
+            nlh, values = name_lookup_table[num]
+            print(f'  Legnth:                              {nlh.length}')
+            print(f'  Version:                             {nlh.version}')
+            print(f'  Offset into .debug_info section:     {hex(nlh.info_offset)}')
+            print(f'  Size of area in .debug_info section: {nlh.info_size}\n')
+            print(f'    Offset   Name')
+            for offset, name in values:
+                offset_str = f'{offset:x}'
+                print(f"    {offset_str.ljust(9, ' ')}{name}")
+        print()
+
+    def get_compilation_units(self, section_headers, abbreviation_tables):
         compilation_units = {}
+        name, debug_info = self.get_section_from_name('.debug_info', section_headers)
+        name, debug_str = self.get_section_from_name('.debug_str', section_headers)
         offset = debug_info.offset
         limit = debug_info.offset + debug_info.size
+
+        prev_size = 0
         while offset < limit:
-            cu = h.CompilationUnitHeader.from_buffer_copy(self.data[offset : offset + cu_size])
-            compilation_units[num] = cu
-            num += 1
-            offset += cu.length + 4
+            cu = h.CompilationUnitHeader.from_buffer_copy(self.data[offset : offset + sizeof(h.CompilationUnitHeader)])
+            # print(hex(cu.length), cu.version, hex(cu.abbrev_offset))
+            abbrev_table = abbreviation_tables[cu.abbrev_offset]
+            offset += sizeof(h.CompilationUnitHeader)
+            dies = []
+            while True:
+                if (offset - debug_info.offset) - prev_size >= (cu.length + 4):
+                    # print('quitting dies loop')
+                    break
+                abbrev_number = self.data[offset]
+                offset += 1
+                # TODO: abbrev_number is an LEB128 number
+                if abbrev_number == 0:
+                    # print('found abbrev number 0')
+                    dies.append([abbrev_number, None, []])
+                    continue
+                tag, has_children, attributes = abbrev_table[abbrev_number]
+                # print(hex(offset - debug_info.offset - 1), abbrev_number, h.DW_TAG[tag])
+                attr_values = []
+                for name, form in attributes:
+                    relative = hex(offset - debug_info.offset)
+                    if form == 0x08: # DW_FORM_string
+                        value = self.get_string(offset, 0)
+                        offset += len(value) + 1
+                    elif form == 0x05: # DW_FORM_data2
+                        value = int.from_bytes(self.data[offset : offset + 2], 'little')
+                        offset += 2
+                    elif form in [0x06, 0x01, 0x13] : # DW_FORM_data4, DW_FORM_addr, DW_FORM_ref4
+                        value = int.from_bytes(self.data[offset : offset + 4], 'little')
+                        offset += 4
+                    elif form in [0x0c, 0x0b]: # DW_FORM_flag, DW_FORM_data1
+                        value = self.data[offset]
+                        offset += 1
+                    elif form == 0x0e: # DW_FORM_strp
+                        ptr = int.from_bytes(self.data[offset : offset + 4], 'little')
+                        value = self.get_string(debug_str.offset, ptr)
+                        offset += 4
+                    elif form == 0x0a: # DW_FORM_block1
+                        length = self.data[offset]
+                        offset += 1
+                        value = self.data[offset : offset + length]
+                        offset += length
+                    elif form == 0x0f: # DW_FORM_udata
+                        value = 0
+                        shift = 0
+                        while True:
+                            mbyte = self.data[offset]
+                            value |= (mbyte & 0x7f) << shift
+                            offset += 1
+                            if (mbyte & 0x80) >> 7 == 0:
+                                break
+                            shift += 7
+                    elif name == 0 and form == 0:
+                        continue
+                    else:
+                        print('ERROR: not supported')
+                        return
+                    # print(relative, h.DW_AT[name], value)
+                    attr_value = (name, value)
+                    attr_values.append(attr_value)
+                dies.append([abbrev_number, tag, attr_values])
+            # print(hex(offset - debug_info.offset), hex(prev_size))
+            compilation_units[prev_size] = [cu, dies]
+            prev_size += cu.length + 4
+            # time.sleep(3)
 
         return compilation_units
 
     def dump_compilation_units(self, compilation_units):
-        offset = 0
+        print('Contents of the .debug_info section:\n')
+        at_pad = len(max(list(h.DW_AT.values()), key=len))
+
         for num in compilation_units:
-            matrix = []
-            cu = compilation_units[num]
-            matrix.append(['Length:', hex(cu.length)])
-            matrix.append(['Version:', cu.version])
-            matrix.append(['Abbrev Offset:', hex(cu.abbrev_offset)])
-            matrix.append(['Pointer Size:', cu.ptr_size])
-            print(f'  Compilation Unit @ offset {hex(offset):}')
-            print(tabulate(matrix, tablefmt="plain"))
-            offset += cu.length + 4
+            print(f'  Compilation Unit @ offset {hex(num):}')
+            cu, dies = compilation_units[num]
+            print(f'   Length:        {hex(cu.length)} (32-bit)')
+            print(f'   Version:       {cu.version}')
+            print(f'   Abbrev Offset: {hex(cu.abbrev_offset)}')
+            print(f'   Pointer Size:  {cu.ptr_size}')
+            for abbrev_number, tag, attr_values in dies:
+                if abbrev_number == 0:
+                    print(f'             Abbrev number: {abbrev_number}')
+                else:
+                    print(f'             Abbrev number: {abbrev_number} ({h.DW_TAG[tag]})')
+                for name, value in attr_values:
+                    print(f"              {h.DW_AT[name].ljust(at_pad, ' ')} : {value}")
 
 def main(args):
     elf_path = args[1]
@@ -230,8 +375,25 @@ def main(args):
     ats = my_elf.get_abbreviation_tables(shs)
     my_elf.dump_abbreviation_tables(ats)
 
-    cus = my_elf.get_compilation_units(shs)
+    art = my_elf.get_address_range_table(shs)
+    my_elf.dump_address_range_table(art)
+
+    nlt = my_elf.get_name_lookup_table(shs)
+    my_elf.dump_name_lookup_table(nlt)
+
+    cus = my_elf.get_compilation_units(shs, ats)
     my_elf.dump_compilation_units(cus)
+
+    start = time.time()
+    for num in cus:
+        cu, dies = cus[num]
+        for abbrev_number, tag, attr_values in dies:
+            for name, value in attr_values:
+                if name == 0x03 and value == args[2]: # DW_AT_name
+                    print(f'found: {name} {value} in compialtion unit @ offset {hex(num)}')
+                    end = time.time()
+                    print(f'time: {end - start}')
+                    return 0
 
 if __name__ == "__main__":
     main(sys.argv)

@@ -295,3 +295,23 @@ class Attribute(LittleEndianStructure):
         ('name', c_ubyte),
         ('form', c_ubyte),
     ]
+
+class AddressRangeHeader(LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ('length', c_uint),
+        ('version', c_ushort),
+        ('info_offset', c_uint),
+        ('ptr_size', c_ubyte),
+        ('seg_size', c_ubyte),
+        ('pad', c_uint),
+    ]
+
+class NameLookupHeader(LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ('length', c_uint),
+        ('version', c_ushort),
+        ('info_offset', c_uint),
+        ('info_size', c_uint),
+    ]
