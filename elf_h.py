@@ -281,20 +281,20 @@ class CompilationUnitHeader(LittleEndianStructure):
         ('ptr_size', c_ubyte),
     ]
 
-class AbreviationTableHeader(LittleEndianStructure):
-    _pack_ = 1
-    _fields_ = [
-        ('code', c_ubyte),
-        ('tag', c_ubyte),
-        ('has_children', c_ubyte),
-    ]
+# class AbreviationTableHeader(LittleEndianStructure):
+#     _pack_ = 1
+#     _fields_ = [
+#         ('code', c_ubyte),
+#         ('tag', c_ubyte),
+#         ('has_children', c_ubyte),
+#     ]
 
-class Attribute(LittleEndianStructure):
-    _pack_ = 1
-    _fields_ = [
-        ('name', c_ubyte),
-        ('form', c_ubyte),
-    ]
+# class Attribute(LittleEndianStructure):
+#     _pack_ = 1
+#     _fields_ = [
+#         ('name', c_ubyte),
+#         ('form', c_ubyte),
+#     ]
 
 class AddressRangeHeader(LittleEndianStructure):
     _pack_ = 1
@@ -315,3 +315,28 @@ class NameLookupHeader(LittleEndianStructure):
         ('info_offset', c_uint),
         ('info_size', c_uint),
     ]
+
+class DebugInformationEntry:
+    def __init__(self, offset, abbrev_number, tag, has_children, attributes):
+        self.offset = offset
+        self.abbrev_number = abbrev_number
+        self.tag = tag
+        self.has_children = has_children
+        self.attributes = attributes
+
+    def __str__(self) -> str:
+        has_dw_at_name = False
+        for name, value in self.attributes:
+            if name == 0x03: # DW_AT_name
+                has_dw_at_name = True
+                break
+        if has_dw_at_name:
+            return value
+        else:
+            return DW_TAG[self.tag]
+
+class Attribute:
+    def __init__(self, offset, name, value):
+        self.offset = offset
+        self.name = name
+        self.value = value

@@ -1,8 +1,8 @@
 import sys
-import time
 from ctypes import sizeof
 from tabulate import tabulate
 import elf_h as h
+from tree import Node
 
 class elf:
     def __init__(self, file) -> None:
@@ -260,6 +260,69 @@ class elf:
                 print(f"    {offset_str.ljust(9, ' ')}{name}")
         print()
 
+    def get_die(self, offset, abbrev_table, debug_str_offset):
+        abbrev_number = self.data[offset]
+        offset += 1
+        # TODO: abbrev_number is an LEB128 number
+        if abbrev_number == 0:
+            return Node(None), offset
+        tag, has_children, attributes = abbrev_table[abbrev_number]
+        # print(hex(offset - debug_info.offset - 1), abbrev_number, h.DW_TAG[tag])
+        attr_values = []
+        for name, form in attributes:
+            # relative = hex(offset - debug_info.offset)
+            if form == 0x08: # DW_FORM_string
+                value = self.get_string(offset, 0)
+                offset += len(value) + 1
+            elif form == 0x05: # DW_FORM_data2
+                value = int.from_bytes(self.data[offset : offset + 2], 'little')
+                offset += 2
+            elif form in [0x06, 0x01, 0x13] : # DW_FORM_data4, DW_FORM_addr, DW_FORM_ref4
+                value = int.from_bytes(self.data[offset : offset + 4], 'little')
+                offset += 4
+            elif form in [0x0c, 0x0b]: # DW_FORM_flag, DW_FORM_data1
+                value = self.data[offset]
+                offset += 1
+            elif form == 0x0e: # DW_FORM_strp
+                ptr = int.from_bytes(self.data[offset : offset + 4], 'little')
+                value = self.get_string(debug_str_offset, ptr)
+                offset += 4
+            elif form == 0x0a: # DW_FORM_block1
+                length = self.data[offset]
+                offset += 1
+                value = self.data[offset : offset + length]
+                offset += length
+            elif form == 0x0f: # DW_FORM_udata
+                value = 0
+                shift = 0
+                while True:
+                    mbyte = self.data[offset]
+                    value |= (mbyte & 0x7f) << shift
+                    offset += 1
+                    if (mbyte & 0x80) >> 7 == 0:
+                        break
+                    shift += 7
+            elif name == 0 and form == 0:
+                continue
+            else:
+                print('ERROR: not supported')
+                return
+            # print(relative, h.DW_AT[name], value)
+            attr_value = (name, value)
+            attr_values.append(attr_value)
+        die = h.DebugInformationEntry(offset, abbrev_number, tag, has_children, attr_values)
+        return Node(die), offset
+
+    def build_tree(self, offset, root, abbrev_table, debug_str_offset):
+        while True:
+            die, offset = self.get_die(offset, abbrev_table, debug_str_offset)
+            if die.value is None:
+                break
+            root.add_child(die)
+            if die.value.has_children:
+                offset = self.build_tree(offset, die, abbrev_table, debug_str_offset)
+        return offset
+
     def get_compilation_units(self, section_headers, abbreviation_tables):
         compilation_units = {}
         name, debug_info = self.get_section_from_name('.debug_info', section_headers)
@@ -267,75 +330,22 @@ class elf:
         offset = debug_info.offset
         limit = debug_info.offset + debug_info.size
 
-        prev_size = 0
+        prev_offset = 0
         while offset < limit:
             cu = h.CompilationUnitHeader.from_buffer_copy(self.data[offset : offset + sizeof(h.CompilationUnitHeader)])
-            # print(hex(cu.length), cu.version, hex(cu.abbrev_offset))
             abbrev_table = abbreviation_tables[cu.abbrev_offset]
             offset += sizeof(h.CompilationUnitHeader)
-            dies = []
-            while True:
-                if (offset - debug_info.offset) - prev_size >= (cu.length + 4):
-                    # print('quitting dies loop')
-                    break
-                abbrev_number = self.data[offset]
-                offset += 1
-                # TODO: abbrev_number is an LEB128 number
-                if abbrev_number == 0:
-                    # print('found abbrev number 0')
-                    dies.append([abbrev_number, None, []])
-                    continue
-                tag, has_children, attributes = abbrev_table[abbrev_number]
-                # print(hex(offset - debug_info.offset - 1), abbrev_number, h.DW_TAG[tag])
-                attr_values = []
-                for name, form in attributes:
-                    relative = hex(offset - debug_info.offset)
-                    if form == 0x08: # DW_FORM_string
-                        value = self.get_string(offset, 0)
-                        offset += len(value) + 1
-                    elif form == 0x05: # DW_FORM_data2
-                        value = int.from_bytes(self.data[offset : offset + 2], 'little')
-                        offset += 2
-                    elif form in [0x06, 0x01, 0x13] : # DW_FORM_data4, DW_FORM_addr, DW_FORM_ref4
-                        value = int.from_bytes(self.data[offset : offset + 4], 'little')
-                        offset += 4
-                    elif form in [0x0c, 0x0b]: # DW_FORM_flag, DW_FORM_data1
-                        value = self.data[offset]
-                        offset += 1
-                    elif form == 0x0e: # DW_FORM_strp
-                        ptr = int.from_bytes(self.data[offset : offset + 4], 'little')
-                        value = self.get_string(debug_str.offset, ptr)
-                        offset += 4
-                    elif form == 0x0a: # DW_FORM_block1
-                        length = self.data[offset]
-                        offset += 1
-                        value = self.data[offset : offset + length]
-                        offset += length
-                    elif form == 0x0f: # DW_FORM_udata
-                        value = 0
-                        shift = 0
-                        while True:
-                            mbyte = self.data[offset]
-                            value |= (mbyte & 0x7f) << shift
-                            offset += 1
-                            if (mbyte & 0x80) >> 7 == 0:
-                                break
-                            shift += 7
-                    elif name == 0 and form == 0:
-                        continue
-                    else:
-                        print('ERROR: not supported')
-                        return
-                    # print(relative, h.DW_AT[name], value)
-                    attr_value = (name, value)
-                    attr_values.append(attr_value)
-                dies.append([abbrev_number, tag, attr_values])
-            # print(hex(offset - debug_info.offset), hex(prev_size))
-            compilation_units[prev_size] = [cu, dies]
-            prev_size += cu.length + 4
-            # time.sleep(3)
+            root, offset = self.get_die(offset, abbrev_table, debug_str.offset)
+            offset = self.build_tree(offset, root, abbrev_table, debug_str.offset)
+            compilation_units[prev_offset] = [cu, root]
+            prev_offset = offset - debug_info.offset
 
         return compilation_units
+
+    def dump_dies(self, root, level):
+        print(f"{level*'|   '}|- {root.value.__str__()}")
+        for child in root.children:
+            self.dump_dies(child, level+1)
 
     def dump_compilation_units(self, compilation_units):
         print('Contents of the .debug_info section:\n')
@@ -343,18 +353,13 @@ class elf:
 
         for num in compilation_units:
             print(f'  Compilation Unit @ offset {hex(num):}')
-            cu, dies = compilation_units[num]
+            cu, root = compilation_units[num]
             print(f'   Length:        {hex(cu.length)} (32-bit)')
             print(f'   Version:       {cu.version}')
             print(f'   Abbrev Offset: {hex(cu.abbrev_offset)}')
             print(f'   Pointer Size:  {cu.ptr_size}')
-            for abbrev_number, tag, attr_values in dies:
-                if abbrev_number == 0:
-                    print(f'             Abbrev number: {abbrev_number}')
-                else:
-                    print(f'             Abbrev number: {abbrev_number} ({h.DW_TAG[tag]})')
-                for name, value in attr_values:
-                    print(f"              {h.DW_AT[name].ljust(at_pad, ' ')} : {value}")
+            level = 0
+            self.dump_dies(root, level)
 
 def main(args):
     elf_path = args[1]
@@ -383,17 +388,6 @@ def main(args):
 
     cus = my_elf.get_compilation_units(shs, ats)
     my_elf.dump_compilation_units(cus)
-
-    start = time.time()
-    for num in cus:
-        cu, dies = cus[num]
-        for abbrev_number, tag, attr_values in dies:
-            for name, value in attr_values:
-                if name == 0x03 and value == args[2]: # DW_AT_name
-                    print(f'found: {name} {value} in compialtion unit @ offset {hex(num)}')
-                    end = time.time()
-                    print(f'time: {end - start}')
-                    return 0
 
 if __name__ == "__main__":
     main(sys.argv)
