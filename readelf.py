@@ -2,7 +2,6 @@ import argparse
 from tabulate import tabulate
 import elf as elf
 
-
 def dump_file_header(file_header):
     print('ELF Header:')
     matrix = [
@@ -28,7 +27,6 @@ def dump_file_header(file_header):
     ]
     print(tabulate(matrix, tablefmt="plain"))
 
-
 def dump_program_headers(file_header, program_headers):
     print(f'\nElf file type is {file_header.type}')
     print(f'Entry point {hex(file_header.entry)}')
@@ -40,7 +38,6 @@ def dump_program_headers(file_header, program_headers):
     headers = ['Type', 'Offset', 'VirtAddr', 'PhysAddr', 'FileSiz', 'MemSiz', 'Flg', 'Align']
     print(tabulate(matrix, headers=headers, tablefmt="plain"))
 
-
 def dump_section_headers(file_header, section_headers):
     print(f'There are {len(section_headers)} section headers, starting at offset {hex(file_header.shoff)}:\n')
     matrix = []
@@ -51,7 +48,6 @@ def dump_section_headers(file_header, section_headers):
     print('Section Headers:')
     headers = ['[Nr]', 'Name', 'Type', 'Addr', 'Off', 'Size', 'ES', 'Flg', 'Lk', 'Inf', 'Al']
     print(tabulate(matrix, headers=headers, tablefmt="plain"))
-
 
 def dump_symbol_table(symbols):
     matrix = []
@@ -66,7 +62,6 @@ def dump_symbol_table(symbols):
     print(f'\nSymbol table \'.symtab\' contains {len(symbols)} entries:')
     headers = ['Num:', 'Value', 'Size', 'Type', 'Bind', 'Vis', 'Ndx', 'Name']
     print(tabulate(matrix, headers=headers, tablefmt="plain"))
-
 
 def dump_abbreviation_tables(abbreviation_tables):
     print('Contents of the .debug_abbrev section:\n')
@@ -113,6 +108,46 @@ def dump_name_lookup_table(name_lookup_table):
             print(f"    {offset_str.ljust(9, ' ')}{name}")
     print()
 
+def dump_tree(root, level):
+    print(f"{level*'|   '}|- {root.value.__str__()}")
+    for child in root.children:
+        dump_tree(child, level+1)
+
+def dump_die(node):
+    if node.value.abbrev_number == 0:
+        print(f' <{node.value.level}><{node.value.offset:x}>: Abbrev Number: {node.value.abbrev_number}')
+    else:
+        print(f' <{node.value.level}><{node.value.offset:x}>: Abbrev Number: {node.value.abbrev_number} ({elf.dh.DW_TAG[node.value.tag]})')
+        for key, attribute in node.value.attributes.items():
+            name = elf.dh.DW_AT[attribute.name]
+            form = elf.dh.DW_FORM[attribute.form][8:]
+            if attribute.form in [0x01, 0x06]: # DW_FORM_addr, DW_FORM_data4
+                value = hex(attribute.value)
+            elif attribute.form in [0x11, 0x12, 0x13, 0x14]:
+                value = f'<{hex(attribute.value)}>'
+            else:
+                value = attribute.value
+            print(f"    <{attribute.offset:x}>   {name.ljust(36, ' ')}: ({form}) {value}")
+
+def dump_dies(root):
+    for child in root.children:
+        dump_die(child)
+        if len(child.children) > 0:
+            dump_dies(child)
+
+def dump_compilation_units(compilation_units):
+    print('Contents of the .debug_info section:\n')
+
+    for num in compilation_units:
+        print(f'  Compilation Unit @ offset {hex(num):}:')
+        cu, root = compilation_units[num]
+        print(f'   Length:        {hex(cu.length)} (32-bit)')
+        print(f'   Version:       {cu.version}')
+        print(f'   Abbrev Offset: {hex(cu.abbrev_offset)}')
+        print(f'   Pointer Size:  {cu.ptr_size}')
+        dump_die(root)
+        dump_dies(root)
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("elf_file", help="path to elf file")
@@ -130,12 +165,13 @@ def main():
                         action="store_true")
     parser.add_argument("-wr", help="Display the contents of DWARF debug_aranges section",
                         action="store_true")
+    parser.add_argument("-wi", help="Display the contents of DWARF debug_info section",
+                        action="store_true")
     parser.add_argument("-wp", help="Display the contents of DWARF debug_pubnames section",
                         action="store_true")
     args = parser.parse_args()
 
     my_elf = elf.elf(args.elf_file)
-    my_elf.read_file()
 
     if args.file_header or args.headers:
         my_elf.get_file_header()
@@ -165,8 +201,9 @@ def main():
         my_elf.get_name_lookup_table()
         dump_name_lookup_table(my_elf.name_lookup_table)
 
-    # cus = my_elf.get_compilation_units(shs, ats)
-    # my_elf.dump_compilation_units(cus)
+    if args.wi:
+        my_elf.get_compilation_units()
+        dump_compilation_units(my_elf.compilation_units)
 
 if __name__ == "__main__":
     main()

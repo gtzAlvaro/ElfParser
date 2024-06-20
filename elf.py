@@ -7,6 +7,13 @@ class elf:
     def __init__(self, file) -> None:
         self.file = file
 
+    def read_file_decorator(func):
+        def wrapper(self):
+            if not hasattr(self, 'data'):
+                self.read_file()
+            func(self)
+        return wrapper
+    
     def file_header_decorator(func):
         def wrapper(self):
             if not hasattr(self, 'file_header'):
@@ -18,6 +25,13 @@ class elf:
         def wrapper(self):
             if not hasattr(self, 'section_headers'):
                 self.get_section_headers()
+            func(self)
+        return wrapper
+    
+    def abbreviation_tables_decorator(func):
+        def wrapper(self):
+            if not hasattr(self, 'abbreviation_tables'):
+                self.get_abbreviation_tables()
             func(self)
         return wrapper
 
@@ -35,6 +49,7 @@ class elf:
 
         return self.data[address_cpy : address - 1].decode('utf-8')
 
+    @read_file_decorator
     def get_file_header(self):
         self.file_header = eh.FileHeader.from_buffer_copy(self.data[0:sizeof(eh.FileHeader)])
 
@@ -166,15 +181,16 @@ class elf:
                 offset += len(name) + 1
             num += 1
 
-    def get_die(self, offset, abbrev_table, debug_str_offset):
-        abbrev_number = self.data[offset]
+    def get_die(self, level, offset, abbrev_table, prev_offset, debug_info_offset, debug_str_offset):
+        die = dh.DebugInformationEntry(level, offset - debug_info_offset, self.data[offset])
         offset += 1
         # TODO: abbrev_number is an LEB128 number
-        if abbrev_number == 0:
-            return Node(None), offset
-        tag, has_children, attributes = abbrev_table[abbrev_number]
-        attr_values = []
+        if die.abbrev_number == 0:
+            return die, offset
+        die.tag, die.has_children, attributes = abbrev_table[die.abbrev_number]
+        die.attributes = {}
         for name, form in attributes:
+            attribute = dh.Attribute(offset - debug_info_offset, name, form)
             if form == 0x08: # DW_FORM_string
                 value = self.get_string(offset, 0)
                 offset += len(value) + 1
@@ -184,6 +200,8 @@ class elf:
             elif form in [0x06, 0x01, 0x13] : # DW_FORM_data4, DW_FORM_addr, DW_FORM_ref4
                 value = int.from_bytes(self.data[offset : offset + 4], 'little')
                 offset += 4
+                if form == 0x13: # DW_FORM_ref4
+                    value = prev_offset + value
             elif form in [0x0c, 0x0b]: # DW_FORM_flag, DW_FORM_data1
                 value = self.data[offset]
                 offset += 1
@@ -211,55 +229,37 @@ class elf:
             else:
                 print('ERROR: not supported')
                 return
-            attr_value = (name, value)
-            attr_values.append(attr_value)
-        die = dh.DebugInformationEntry(offset, abbrev_number, tag, has_children, attr_values)
-        return Node(die), offset
+            attribute.value = value
+            die.attributes[name] = attribute
+        return die, offset
 
-    def build_tree(self, offset, root, abbrev_table, debug_str_offset):
+    def build_tree(self, level, offset, root, abbrev_table, prev_offset, debug_info_offset, debug_str_offset):
         while True:
-            die, offset = self.get_die(offset, abbrev_table, debug_str_offset)
-            if die.value is None:
+            die, offset = self.get_die(level, offset, abbrev_table, prev_offset, debug_info_offset, debug_str_offset)
+            node = Node(die)
+            root.add_child(node)
+            if die.abbrev_number == 0:
                 break
-            root.add_child(die)
-            if die.value.has_children:
-                offset = self.build_tree(offset, die, abbrev_table, debug_str_offset)
+            if die.has_children:
+                offset = self.build_tree(level + 1, offset, node, abbrev_table, prev_offset, debug_info_offset, debug_str_offset)
         return offset
 
-    def get_compilation_units(self, section_headers, abbreviation_tables):
-        compilation_units = {}
-        name, debug_info = self.get_section_from_name('.debug_info', section_headers)
-        name, debug_str = self.get_section_from_name('.debug_str', section_headers)
+    @section_headers_decorator
+    @abbreviation_tables_decorator
+    def get_compilation_units(self):
+        self.compilation_units = {}
+        name, debug_info = self.get_section_from_name('.debug_info')
+        name, debug_str = self.get_section_from_name('.debug_str')
         offset = debug_info.offset
         limit = debug_info.offset + debug_info.size
 
         prev_offset = 0
         while offset < limit:
             cu = dh.CompilationUnitHeader.from_buffer_copy(self.data[offset : offset + sizeof(dh.CompilationUnitHeader)])
-            abbrev_table = abbreviation_tables[cu.abbrev_offset]
+            abbrev_table = self.abbreviation_tables[cu.abbrev_offset]
             offset += sizeof(dh.CompilationUnitHeader)
-            root, offset = self.get_die(offset, abbrev_table, debug_str.offset)
-            offset = self.build_tree(offset, root, abbrev_table, debug_str.offset)
-            compilation_units[prev_offset] = [cu, root]
+            die, offset = self.get_die(0, offset, abbrev_table, prev_offset, debug_info.offset, debug_str.offset)
+            root = Node(die)
+            offset = self.build_tree(1, offset, root, abbrev_table, prev_offset, debug_info.offset, debug_str.offset)
+            self.compilation_units[prev_offset] = [cu, root]
             prev_offset = offset - debug_info.offset
-
-        return compilation_units
-
-    def dump_dies(self, root, level):
-        print(f"{level*'|   '}|- {root.value.__str__()}")
-        for child in root.children:
-            self.dump_dies(child, level+1)
-
-    def dump_compilation_units(self, compilation_units):
-        print('Contents of the .debug_info section:\n')
-        at_pad = len(max(list(dh.DW_AT.values()), key=len))
-
-        for num in compilation_units:
-            print(f'  Compilation Unit @ offset {hex(num):}')
-            cu, root = compilation_units[num]
-            print(f'   Length:        {hex(cu.length)} (32-bit)')
-            print(f'   Version:       {cu.version}')
-            print(f'   Abbrev Offset: {hex(cu.abbrev_offset)}')
-            print(f'   Pointer Size:  {cu.ptr_size}')
-            level = 0
-            self.dump_dies(root, level)

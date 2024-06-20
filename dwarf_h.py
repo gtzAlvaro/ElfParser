@@ -253,7 +253,8 @@ class NameLookupHeader(LittleEndianStructure):
     ]
 
 class DebugInformationEntry:
-    def __init__(self, offset, abbrev_number, tag, has_children, attributes):
+    def __init__(self, level, offset, abbrev_number, tag=None, has_children=None, attributes=None):
+        self.level = level
         self.offset = offset
         self.abbrev_number = abbrev_number
         self.tag = tag
@@ -261,18 +262,14 @@ class DebugInformationEntry:
         self.attributes = attributes
 
     def __str__(self) -> str:
-        has_dw_at_name = False
-        for name, value in self.attributes:
-            if name == 0x03: # DW_AT_name
-                has_dw_at_name = True
-                break
-        if has_dw_at_name:
-            return value
-        else:
-            return DW_TAG[self.tag]
+        my_string = f'{self.level} {self.offset:x} {self.abbrev_number}'
+        if self.abbrev_number != 0:
+            my_string += f' {DW_TAG[self.tag]} {DW_CHILDREN[self.has_children]}'
+        return my_string
 
 class Attribute:
-    def __init__(self, offset, name, value):
+    def __init__(self, offset=0, name='', form=0, value=0):
         self.offset = offset
         self.name = name
+        self.form = form
         self.value = value
