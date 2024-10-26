@@ -108,36 +108,8 @@ def dump_name_lookup_table(name_lookup_table):
             print(f"    {offset_str.ljust(9, ' ')}{name}")
     print()
 
-def dump_tree(root, level):
-    print(f"{level*'|   '}|- {root.value.__str__()}")
-    for child in root.children:
-        dump_tree(child, level+1)
-
-def dump_die(node):
-    if node.value.abbrev_number == 0:
-        print(f' <{node.value.level}><{node.value.offset:x}>: Abbrev Number: {node.value.abbrev_number}')
-    else:
-        print(f' <{node.value.level}><{node.value.offset:x}>: Abbrev Number: {node.value.abbrev_number} ({elf.dh.DW_TAG[node.value.tag]})')
-        for key, attribute in node.value.attributes.items():
-            name = elf.dh.DW_AT[attribute.name]
-            form = elf.dh.DW_FORM[attribute.form][8:]
-            if attribute.form in [0x01, 0x06]: # DW_FORM_addr, DW_FORM_data4
-                value = hex(attribute.value)
-            elif attribute.form in [0x11, 0x12, 0x13, 0x14]:
-                value = f'<{hex(attribute.value)}>'
-            else:
-                value = attribute.value
-            print(f"    <{attribute.offset:x}>   {name.ljust(36, ' ')}: ({form}) {value}")
-
-def dump_dies(root):
-    for child in root.children:
-        dump_die(child)
-        if len(child.children) > 0:
-            dump_dies(child)
-
 def dump_compilation_units(compilation_units):
     print('Contents of the .debug_info section:\n')
-
     for num in compilation_units:
         print(f'  Compilation Unit @ offset {hex(num):}:')
         cu, root = compilation_units[num]
@@ -145,8 +117,7 @@ def dump_compilation_units(compilation_units):
         print(f'   Version:       {cu.version}')
         print(f'   Abbrev Offset: {hex(cu.abbrev_offset)}')
         print(f'   Pointer Size:  {cu.ptr_size}')
-        dump_die(root)
-        dump_dies(root)
+        root.traverse()
 
 def main():
     parser = argparse.ArgumentParser()

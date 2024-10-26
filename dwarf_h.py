@@ -217,21 +217,6 @@ class CompilationUnitHeader(LittleEndianStructure):
         ('ptr_size', c_ubyte),
     ]
 
-# class AbreviationTableHeader(LittleEndianStructure):
-#     _pack_ = 1
-#     _fields_ = [
-#         ('code', c_ubyte),
-#         ('tag', c_ubyte),
-#         ('has_children', c_ubyte),
-#     ]
-
-# class Attribute(LittleEndianStructure):
-#     _pack_ = 1
-#     _fields_ = [
-#         ('name', c_ubyte),
-#         ('form', c_ubyte),
-#     ]
-
 class AddressRangeHeader(LittleEndianStructure):
     _pack_ = 1
     _fields_ = [
@@ -252,24 +237,47 @@ class NameLookupHeader(LittleEndianStructure):
         ('info_size', c_uint),
     ]
 
+class Attribute:
+    def __init__(self, offset, name, form, value=None, offset_str=None) -> None:
+        self.offset = offset
+        self.name = name
+        self.form = form
+        self.value = value
+        self.offset_str = offset_str
+
+    def __str__(self) -> str:
+        if self.form == 0x13: # DW_FORM_ref4
+            value = f'<{hex(self.value)}>'
+        elif self.form == 0x06: # DW_FORM_data4
+            value = f'{hex(self.value)}'
+        elif self.form == 0x0e: # DW_FORM_strp
+            value = f'(indirect string, offset: {hex(self.offset_str)}): {self.value}'
+        else:
+            value = self.value
+        my_string = f"    <{self.offset:x}>   {self.name.ljust(18, ' ')}: {value}\n"
+
+        return my_string
+
 class DebugInformationEntry:
-    def __init__(self, level, offset, abbrev_number, tag=None, has_children=None, attributes=None):
+    def __init__(self, level, offset, abbrev_number, tag=None, has_children=None):
         self.level = level
         self.offset = offset
         self.abbrev_number = abbrev_number
         self.tag = tag
         self.has_children = has_children
-        self.attributes = attributes
+        self.attributes = {}
+
+    def set_attr(self, name, value):
+        setattr(self, name, value.value)
+        self.attributes[name] = value
 
     def __str__(self) -> str:
-        my_string = f'{self.level} {self.offset:x} {self.abbrev_number}'
+        my_string = f' <{self.level}><{self.offset:x}>: Abbrev Number: {self.abbrev_number}'
         if self.abbrev_number != 0:
-            my_string += f' {DW_TAG[self.tag]} {DW_CHILDREN[self.has_children]}'
-        return my_string
+            my_string += f' ({DW_TAG[self.tag]})'
+        my_string += '\n'
 
-class Attribute:
-    def __init__(self, offset=0, name='', form=0, value=0):
-        self.offset = offset
-        self.name = name
-        self.form = form
-        self.value = value
+        for name, value in self.attributes.items():
+            my_string += value.__str__()
+
+        return my_string[:-1]

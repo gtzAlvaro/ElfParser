@@ -1,7 +1,7 @@
 from ctypes import sizeof
 import elf_h as eh
+import tree as tree
 import dwarf_h as dh
-from tree import Node
 
 class elf:
     def __init__(self, file) -> None:
@@ -188,9 +188,12 @@ class elf:
         if die.abbrev_number == 0:
             return die, offset
         die.tag, die.has_children, attributes = abbrev_table[die.abbrev_number]
-        die.attributes = {}
         for name, form in attributes:
-            attribute = dh.Attribute(offset - debug_info_offset, name, form)
+            if name == 0 and form == 0:
+                continue
+
+            attr_name = dh.DW_AT[name]
+            attribute = dh.Attribute(offset - debug_info_offset, attr_name, form)
             if form == 0x08: # DW_FORM_string
                 value = self.get_string(offset, 0)
                 offset += len(value) + 1
@@ -207,6 +210,7 @@ class elf:
                 offset += 1
             elif form == 0x0e: # DW_FORM_strp
                 ptr = int.from_bytes(self.data[offset : offset + 4], 'little')
+                attribute.offset_str = ptr
                 value = self.get_string(debug_str_offset, ptr)
                 offset += 4
             elif form == 0x0a: # DW_FORM_block1
@@ -224,19 +228,17 @@ class elf:
                     if (mbyte & 0x80) >> 7 == 0:
                         break
                     shift += 7
-            elif name == 0 and form == 0:
-                continue
             else:
                 print('ERROR: not supported')
                 return
             attribute.value = value
-            die.attributes[name] = attribute
+            die.set_attr(attr_name, attribute)
         return die, offset
 
     def build_tree(self, level, offset, root, abbrev_table, prev_offset, debug_info_offset, debug_str_offset):
         while True:
             die, offset = self.get_die(level, offset, abbrev_table, prev_offset, debug_info_offset, debug_str_offset)
-            node = Node(die)
+            node = tree.Node(die)
             root.add_child(node)
             if die.abbrev_number == 0:
                 break
@@ -259,7 +261,7 @@ class elf:
             abbrev_table = self.abbreviation_tables[cu.abbrev_offset]
             offset += sizeof(dh.CompilationUnitHeader)
             die, offset = self.get_die(0, offset, abbrev_table, prev_offset, debug_info.offset, debug_str.offset)
-            root = Node(die)
+            root = tree.Node(die)
             offset = self.build_tree(1, offset, root, abbrev_table, prev_offset, debug_info.offset, debug_str.offset)
             self.compilation_units[prev_offset] = [cu, root]
             prev_offset = offset - debug_info.offset
