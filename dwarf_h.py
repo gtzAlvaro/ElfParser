@@ -259,7 +259,7 @@ class Attribute:
         return my_string
 
 class DebugInformationEntry:
-    def __init__(self, level, offset, abbrev_number, tag=None, has_children=None):
+    def __init__(self, level, offset, abbrev_number, tag=None, has_children=None) -> None:
         self.level = level
         self.offset = offset
         self.abbrev_number = abbrev_number
