@@ -108,7 +108,7 @@ class SymbolEntry(LittleEndianStructure):
             ['type:', ST_TYPE[st_type]],
             ['bind:', ST_BIND[st_bind]]
         ]
-        return tabulate(matrix)
+        return tabulate(matrix, tablefmt='plain')
 
 class Symbols:
     def __init__(self):
