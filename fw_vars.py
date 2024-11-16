@@ -1,28 +1,5 @@
-"""
-examples from n_rtmain
-
-g_acpi_ctx          : acpi_io_ctx_t
-fw_bypass_reg       : IBL_FW_BYPASS_0_FW_DEF_t
-g_storage_flash_ctx : struct storage_flash_ctx_t
-fw_sts              : union green_fw_sts
-
-reload(fw_vars.elf.dh)
-reload(fw_vars.elf.tree)
-reload(fw_vars.elf)
-reload(fw_vars)
-myelf = elf.elf('n_rtmain')
-fw = fw_vars.fw_vars(myelf)
-fw.elf.get_symbols()
-fw.elf.get_compilation_units()
-fw_bypass_0 = fw.create('IBL_FW_BYPASS_0_FW_DEF_t')
-g_storage_flash_ctx = fw.create('storage_flash_ctx_t')
-green_fw_sts = fw.create('green_fw_sts')
-fw.dump()
-fw.debug()
-
-"""
-
-import elf as elf
+import math
+from enum import Enum
 from ctypes import Union
 from ctypes import sizeof
 from ctypes import c_uint
@@ -31,6 +8,7 @@ from ctypes import c_ushort
 from tabulate import tabulate
 from ctypes import c_ulonglong
 from ctypes import LittleEndianStructure
+import elf as elf
 
 invalid_types = [
     0x01, # DW_TAG_array_type
@@ -62,9 +40,34 @@ def var_repr(name, ref_die, is_const, is_pointer, is_array, array_size):
 
     return var_repr
 
+def __str__(self):
+    matrix = []
+    for field in self._fields_:
+        val = getattr(self, field[0])
+        if type(val) is int:
+            matrix.append([field[0], hex(val)])
+        else:
+            try:
+                length = len(val)
+                if type(val[0]) is int:
+                    array = ' '.join(map(lambda x: f'{x:02x}', val))
+                    matrix.append([field[0], array])
+                else:
+                    for element in val:
+                        matrix.append([field[0], ''])
+                        matrix.append(['', element.__str__()])
+            except:
+                matrix.append([field[0], ''])
+                matrix.append(['', val.__str__()])
+    return tabulate(matrix, tablefmt="plain")
+
+def show(self):
+    print(self.__str__())
+
 class fw_vars:
-    def __init__(self, elf) -> None:
-        self.elf = elf
+    def __init__(self, name) -> None:
+        self.name = name
+        self.elf = elf.elf(name)
         self._debug_info = {}
 
     def get_node(self, attribute, value):
@@ -83,7 +86,7 @@ class fw_vars:
         node = self.get_node('offset', offset)
         return node
 
-    def whatis(self, node, level):
+    def get_data_type(self, node, level):
         die = node.value
         name = getattr(die, 'DW_AT_name', 'no_name')
         if die.tag == 0x13: # DW_TAG_structure_type
@@ -151,7 +154,7 @@ class fw_vars:
 
         # get node type
         ref_node = self.get_by_ref(die.DW_AT_type)
-        data_type, byte_size = self.whatis(ref_node, level+1)
+        data_type, byte_size = self.get_data_type(ref_node, level+1)
 
         return data_type, byte_size
 
@@ -183,7 +186,7 @@ class fw_vars:
                         end = start + type_node.value.DW_AT_byte_size
             print(line, f'({start}:{end})')
 
-            data_byte, byte_size = self.whatis(ref_node, level+1)
+            data_byte, byte_size = self.get_data_type(ref_node, level+1)
 
             if hasattr(child_die, 'DW_AT_bit_size') and hasattr(child_die, 'DW_AT_bit_offset'):
                 members.append((name, data_byte, child_die.DW_AT_bit_size))
@@ -200,34 +203,85 @@ class fw_vars:
     def union(self, type_name, node, level):
         members = self.get_members(node, level)
         byte_size = node.value.DW_AT_byte_size
-        return type(type_name, (Union,), {'_pack_': 4, '_fields_': members}), byte_size
+        return type(
+            type_name,
+            (Union,),
+            {
+                '_pack_': 4,
+                '_fields_': members,
+                '__str__': __str__,
+                'show': show
+            }
+        ), byte_size
 
     def struct(self, type_name, node, level):
         members = self.get_members(node, level)
         byte_size = node.value.DW_AT_byte_size
-        return type(type_name, (LittleEndianStructure,), {'_pack_': 4, '_fields_': members}), byte_size
-    
-    def create_from_node(self, node, address=None):
-        name = getattr(node.value, 'DW_AT_name', 'no_name')
-        data_type, byte_size = self.whatis(node, 0)
+        return type(
+            type_name,
+            (LittleEndianStructure,),
+            {
+                '_pack_': 4,
+                '_fields_': members,
+                '__str__': __str__,
+                'show': show
+            }
+        ), byte_size
+
+    def whatis(self, name):
+        node = self.get_by_name(name)
+        die = node.value
+        if die.tag != 0x34: # DW_TAG_variable
+            self.log.warning('only variable names are acepted')
+            return 1, None
+
+        ref_node, line, array_size = self.decode(name, die)
+        return ref_node.value.DW_AT_name
+
+    def create(self, name, mybytes=None):
+        node = self.get_by_name(name)
+        data_type, byte_size = self.get_data_type(node, 0)
         self._debug_info[name] = [
             sizeof(data_type),
             byte_size
         ]
-        return data_type()
-    
-    def create(self, name, address=None):
-        node = self.get_by_name(name)
-        return self.create_from_node(node, address)
 
-    def dump(self):
+        if mybytes is not None:
+            return data_type.from_buffer_copy(mybytes)
+        return data_type()
+
+    def get_enum(self, name):
+        node = self.get_by_name(name)
+        die = node.value
+
+        if die.tag != 0x04: # DW_TAG_enumeration_type
+            self.log.warning(f'only enums are allowed: {die.tag}')
+            return None
+
+        enumerators = []
+        for child in node.children:
+            child_die = child.value
+
+            if child_die.abbrev_number == 0:
+                continue
+
+            if child_die.tag != 0x28: # DW_TAG_enumerator
+                continue
+
+            enumerator = (child_die.DW_AT_name, child_die.DW_AT_const_value)
+            enumerators.append(enumerator)
+    
+        return Enum(name, enumerators)
+
+    def dump_global_vars(self):
         for number in self.elf.symbols:
             name, symbol = self.elf.symbols[number]
+
             st_type = symbol.info & 0x0f
             st_bind = symbol.info >> 4
             if st_type != 1: # OBJECT
                 continue
-            
+
             if st_bind != 1: # GLOBAL
                 continue
 
@@ -235,11 +289,8 @@ class fw_vars:
             if name[0:2] != 'g_':
                 continue
 
-            node = self.get_by_name(name)
-            ref_node, line, array_size = self.decode(name, node.value)
-            print(line)
-            fw_var = self.create_from_node(ref_node)
-            setattr(self, name, fw_var)
+            data_type = self.whatis(name)
+            myvar = self.create(data_type)
 
     def debug(self):
         matrix = []

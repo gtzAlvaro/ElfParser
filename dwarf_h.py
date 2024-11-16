@@ -1,4 +1,5 @@
 from ctypes import c_uint
+from ctypes import c_byte
 from ctypes import c_ubyte
 from ctypes import c_ushort
 from ctypes import LittleEndianStructure
@@ -236,6 +237,46 @@ class NameLookupHeader(LittleEndianStructure):
         ('info_offset', c_uint),
         ('info_size', c_uint),
     ]
+
+class StatementProgramPrologue(LittleEndianStructure):
+    _pack_ = 1
+    _fields_ = [
+        ('total_length', c_uint),
+        ('version', c_ushort),
+        ('prologue_length', c_uint),
+        ('minimum_instruction_length', c_ubyte),
+        ('default_is_stmt', c_ubyte),
+        ('line_base', c_byte),
+        ('line_range', c_ubyte),
+        ('opcode_base', c_ubyte),
+    ]
+
+class FileName:
+    def __init__(self):
+        self.name = None
+        self.dir = None
+        self.time = None
+        self.size = None
+
+class StateMachineRegisters:
+    def __init__(self):
+        self.address = 0
+        self.file = 1
+        self.line = 1
+        self.column = 0
+        self.is_stmt = None
+        self.basic_block = False
+        self.end_sequence = False
+
+class StatementProgram:
+    def __init__(self):
+        self.prologue = None
+        self.opcodes = None
+        self.directory_table_offset = None
+        self.include_directories = None
+        self.file_name_table_offset = None
+        self.file_names = None
+        self.matrix = None
 
 class Attribute:
     def __init__(self, offset, name, form, value=None, offset_str=None) -> None:

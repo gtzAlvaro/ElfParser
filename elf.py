@@ -4,7 +4,8 @@ import tree as tree
 import dwarf_h as dh
 
 class elf:
-    def __init__(self, file) -> None:
+    def __init__(self, name, file=None) -> None:
+        self.name = name
         self.file = file
 
     def read_file_decorator(func):
@@ -49,6 +50,34 @@ class elf:
 
         return self.data[address_cpy : address - 1].decode('utf-8')
 
+    def unsigned_leb128_decoder(self, offset):
+        result = 0
+        shift = 0
+        while True:
+            mbyte = self.data[offset]
+            result |= (mbyte & 0x7f) << shift
+            offset += 1
+            if (mbyte & 0x80) >> 7 == 0:
+                break
+            shift += 7
+        return offset, result
+
+    def signed_leb128_decoder(self, offset):
+        result = 0
+        shift = 0
+        while True:
+            mbyte = self.data[offset]
+            offset += 1
+            result |= (mbyte & 0x7f) << shift
+            shift += 7
+            if not (mbyte & 0x80):
+                break
+
+        if mbyte & 0x40:
+            result |= -(1 << shift)
+
+        return offset, result
+
     @read_file_decorator
     def get_file_header(self):
         self.file_header = eh.FileHeader.from_buffer_copy(self.data[0:sizeof(eh.FileHeader)])
@@ -82,6 +111,14 @@ class elf:
             sh_name, sh = self.section_headers[section]
             if sh_name == name:
                 return sh_name, sh
+
+    def get_symbol(self, name):
+        for num in self.symbols:
+            symbol_name, symbol = self.symbols[num]
+            if symbol_name == name:
+                return symbol_name, symbol
+
+        return None, None
 
     @section_headers_decorator
     def get_symbols(self):
@@ -181,6 +218,132 @@ class elf:
                 offset += len(name) + 1
             num += 1
 
+    @section_headers_decorator
+    def get_debug_lines(self):
+        self.debug_lines = {}
+        name, debug_line = self.get_section_from_name('.debug_line')
+        offset = debug_line.offset
+        limit = debug_line.offset + debug_line.size
+
+        base_offset = 0
+        while offset < limit:
+            statement = dh.StatementProgram()
+            statement.prologue = dh.StatementProgramPrologue.from_buffer_copy(self.data[offset : offset + sizeof(dh.StatementProgramPrologue)])
+
+            base = offset + sizeof(dh.StatementProgramPrologue)
+            statement.opcodes = []
+            for num in range(statement.prologue.opcode_base - 1):
+                opcode = self.data[base]
+                statement.opcodes.append(opcode)
+                base += 1
+
+            statement.directory_table_offset = base - debug_line.offset
+            statement.include_directories = []
+            while True:
+                dir_name = self.get_string(debug_line.offset, base - debug_line.offset)
+                statement.include_directories.append(dir_name)
+                base += len(dir_name) + 1
+                if self.data[base] == 0:
+                    base += 1
+                    break
+
+            statement.file_names = []
+            statement.file_name_table_offset = base - debug_line.offset
+            while True:
+                myfile = dh.FileName()
+                myfile.name = self.get_string(debug_line.offset, base - debug_line.offset)
+                base += len(myfile.name) + 1
+                myfile.dir = self.data[base]
+                base += 1
+                myfile.time = self.data[base]
+                base += 1
+                myfile.size = self.data[base]
+                base += 1
+
+                statement.file_names.append(myfile)
+                if self.data[base] == 0:
+                    base += 1
+                    break
+
+            myregs = dh.StateMachineRegisters()
+            statement.matrix = []
+            while base < (debug_line.offset + base_offset + statement.prologue.total_length + 4):
+                if self.data[base] == 0x01: # DW_LNS_copy
+                    base += 1
+                    row = [
+                        hex(base - debug_line.offset),
+                        hex(myregs.address),
+                        myregs.file,
+                        myregs.line,
+                        myregs.column,
+                        myregs.is_stmt,
+                        myregs.basic_block,
+                        myregs.end_sequence
+                    ]
+                    statement.matrix.append(row)
+                elif self.data[base] == 0x02: # DWS_LNS_advance_pc
+                    base += 1
+                    base, value = self.unsigned_leb128_decoder(base)
+                    myregs.address += statement.prologue.minimum_instruction_length * value
+                elif self.data[base] == 0x03: # DW_LNS_advance_line
+                    base += 1
+                    base, value = self.signed_leb128_decoder(base)
+                    myregs.line += value
+                elif self.data[base] == 0x04: # DW_LNS_set_file
+                    base += 1
+                    base, value = self.unsigned_leb128_decoder(base)
+                    myregs.file = value
+                elif self.data[base] == 0x05: # DWS_LNS_set_column
+                    base += 1
+                    base, value = self.unsigned_leb128_decoder(base)
+                    myregs.column = value
+                elif self.data[base] == 0x00: # extended opcodes
+                    base += 1
+                    base, size = self.unsigned_leb128_decoder(base)
+                    if self.data[base] == 0x01: # DW_LNE_end_sequence
+                        base += 1
+                        myregs.end_sequence = True
+                        row = [
+                            hex(base - debug_line.offset),
+                            hex(myregs.address),
+                            myregs.file,
+                            myregs.line,
+                            myregs.column,
+                            myregs.is_stmt,
+                            myregs.basic_block,
+                            myregs.end_sequence
+                        ]
+                        statement.matrix.append(row)
+                        myregs = dh.StateMachineRegisters()
+                    elif self.data[base] == 0x02: # DW_LNE_set_address
+                        base += 1
+                        address = int.from_bytes(self.data[base : base + size - 1], 'little')
+                        base += size - 1
+                        myregs.address = address
+                else: # special opcode
+                    adjusted_opcode = self.data[base] - statement.prologue.opcode_base
+                    base += 1
+                    address_advance = adjusted_opcode // statement.prologue.line_range
+                    line_advance = statement.prologue.line_base + (adjusted_opcode % statement.prologue.line_range)
+                    myregs.line += line_advance
+                    myregs.address += statement.prologue.minimum_instruction_length * address_advance
+                    row = [
+                        hex(base - debug_line.offset),
+                        hex(myregs.address),
+                        myregs.file,
+                        myregs.line,
+                        myregs.column,
+                        myregs.is_stmt,
+                        myregs.basic_block,
+                        myregs.end_sequence
+                    ]
+                    statement.matrix.append(row)
+                    myregs.basic_block = False
+
+            self.debug_lines[base_offset] = statement
+            offset += statement.prologue.total_length + 4
+            base_offset += statement.prologue.total_length + 4
+
     def get_die(self, level, offset, abbrev_table, prev_offset, debug_info_offset, debug_str_offset):
         die = dh.DebugInformationEntry(level, offset - debug_info_offset, self.data[offset])
         offset += 1
@@ -219,15 +382,7 @@ class elf:
                 value = self.data[offset : offset + length]
                 offset += length
             elif form == 0x0f: # DW_FORM_udata
-                value = 0
-                shift = 0
-                while True:
-                    mbyte = self.data[offset]
-                    value |= (mbyte & 0x7f) << shift
-                    offset += 1
-                    if (mbyte & 0x80) >> 7 == 0:
-                        break
-                    shift += 7
+                offset, value = self.unsigned_leb128_decoder(offset)
             else:
                 print('ERROR: not supported')
                 return

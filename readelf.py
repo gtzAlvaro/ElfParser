@@ -108,6 +108,39 @@ def dump_name_lookup_table(name_lookup_table):
             print(f"    {offset_str.ljust(9, ' ')}{name}")
     print()
 
+def dump_debug_lines(debug_lines):
+    print('Raw dump of debug contents of section .debug_line:\n')
+    for offset, statement in debug_lines.items():
+        print('  Offset:'.ljust(32, ' '), hex(offset))
+        print('  Length:'.ljust(32, ' '), statement.prologue.total_length)
+        print('  DWARF Version:'.ljust(32, ' '), statement.prologue.version)
+        print('  Prologue Length:'.ljust(32, ' '), statement.prologue.prologue_length)
+        print('  Minimum Instruction Length:'.ljust(32, ' '), statement.prologue.minimum_instruction_length)
+        print("  Initial value of \'is_stmt\':".ljust(32, ' '), statement.prologue.default_is_stmt)
+        print('  Line Base:'.ljust(32, ' '), statement.prologue.line_base)
+        print('  Line Range:'.ljust(32, ' '), statement.prologue.line_range)
+        print('  Opcode Base:'.ljust(32, ' '), statement.prologue.opcode_base)
+
+        print('\n Opcodes:')
+        for num in range(statement.prologue.opcode_base - 1):
+            print(f'  Opcode {num + 1} has {statement.opcodes[num]} args')
+
+        count = 1
+        print(f'\n The Directory Table (offset {hex(statement.directory_table_offset)}):')
+        for directory in statement.include_directories:
+            print(f'  {count} {directory}')
+            count += 1
+
+        count = 1
+        print(f'\n The File Name Table (offset {hex(statement.file_name_table_offset)}):')
+        print('  Entry Dir Time  Size  Name')
+        for myfile in statement.file_names:
+            print(f'  {count} {myfile.dir} {myfile.time} {myfile.size} {myfile.name}')
+            count += 1
+
+        table = tabulate(statement.matrix, headers=['base', 'address', 'file', 'line', 'column', 'is_stmt', 'basic block', 'end sequence'])
+        print(f'\n Line Number Statements:\n{table}')
+
 def dump_compilation_units(compilation_units):
     print('Contents of the .debug_info section:\n')
     for num in compilation_units:
@@ -140,9 +173,11 @@ def main():
                         action="store_true")
     parser.add_argument("-wp", help="Display the contents of DWARF debug_pubnames section",
                         action="store_true")
+    parser.add_argument("-wl", help="Display the contents of DWARF debug_lines section",
+                        action="store_true")
     args = parser.parse_args()
 
-    my_elf = elf.elf(args.elf_file)
+    my_elf = elf.elf('my_elf', args.elf_file)
 
     if args.file_header or args.headers:
         my_elf.get_file_header()
@@ -171,6 +206,10 @@ def main():
     if args.wp:
         my_elf.get_name_lookup_table()
         dump_name_lookup_table(my_elf.name_lookup_table)
+
+    if args.wl:
+        my_elf.get_debug_lines()
+        dump_debug_lines(my_elf.debug_lines)
 
     if args.wi:
         my_elf.get_compilation_units()
