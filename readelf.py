@@ -193,7 +193,7 @@ def main():
 
     if args.syms:
         my_elf.get_symbols()
-        dump_symbol_table(my_elf.symbols)
+        dump_symbol_table(my_elf.symbols.symbols)
 
     if args.wa:
         my_elf.get_abbreviation_tables()

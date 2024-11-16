@@ -1,6 +1,8 @@
+import re
 from ctypes import c_uint
 from ctypes import c_ubyte
 from ctypes import c_ushort
+from tabulate import tabulate
 from ctypes import c_ulonglong
 from ctypes import LittleEndianStructure
 
@@ -93,3 +95,41 @@ class SymbolEntry(LittleEndianStructure):
         ('other', c_ubyte),
         ('shndx', c_ushort),
     ]
+
+    def __repr__(self):
+        return f'SymbolEntry({hex(self.name)}, {hex(self.value)}, {self.size}, {self.info}, {self.other}, {self.shndx})'
+
+    def __str__(self):
+        st_type = self.info & 0x0f
+        st_bind = self.info >> 4
+        matrix = [
+            ['value:', hex(self.value)],
+            ['size:', self.size],
+            ['type:', ST_TYPE[st_type]],
+            ['bind:', ST_BIND[st_bind]]
+        ]
+        return tabulate(matrix)
+
+class Symbols:
+    def __init__(self):
+        self.symbols = {}
+
+    def get_symbols(self):
+        return self.symbols
+
+    def add_symbol(self, num, name, value):
+        self.symbols[num] = (name, value)
+        setattr(self, name, value)
+
+    def search(self, pattern):
+        results = []
+
+        for num in self.symbols:
+            name, value = self.symbols[num]
+            match = re.search(pattern, name)
+            if match is None:
+                continue
+
+            results.append(name)
+
+        return results

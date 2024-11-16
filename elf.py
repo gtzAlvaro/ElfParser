@@ -122,10 +122,11 @@ class elf:
 
     @section_headers_decorator
     def get_symbols(self):
-        self.symbols = {}
+        self.symbols = eh.Symbols()
         name1, symtab = self.get_section_from_name('.symtab')
         name2, strtab = self.get_section_from_name('.strtab')
         num_symbols = symtab.size // sizeof(eh.SymbolEntry)
+
         for num in range(num_symbols):
             src_cpy = symtab.offset + sizeof(eh.SymbolEntry) * num
             dst_cpy = symtab.offset + sizeof(eh.SymbolEntry) * (num + 1)
@@ -137,7 +138,7 @@ class elf:
             if st_type != 3:
                 name = self.get_string(strtab.offset, symbol.name)
 
-            self.symbols[num] = (name, symbol)
+            self.symbols.add_symbol(num, name, symbol)
 
     @section_headers_decorator
     def get_abbreviation_tables(self):
